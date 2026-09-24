@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8"><title>Satellite Sniper Game</title>
+    <style>
+        body { margin: 0; background: #111; color: #fff; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; overflow: hidden; user-select: none; }
+        #gameContainer { position: relative; box-shadow: 0 0 20px rgba(0, 255, 200, 0.2); border-radius: 8px; overflow: hidden; }
+        canvas { background: linear-gradient(to bottom, #1a1c2e, #0c0d14); display: block; }
+        .instructions { margin-top: 15px; max-width: 800px; font-size: 13px; color: #aaa; background: #222; padding: 12px; border-radius: 6px; border-left: 4px solid #00ffcc; line-height: 1.5; }
+        #uiOverlay { position: absolute; top: 20px; left: 20px; pointer-events: none; font-size: 20px; font-weight: bold; text-shadow: 2px 2px 4px #000; width: calc(100% - 40px); display: flex; align-items: center; gap: 15px; }
+        .satGaugeContainer { display: inline-flex; align-items: center; gap: 5px; vertical-align: middle; }
+        #satHpBarBg { width: 80px; height: 12px; background: rgba(0,0,0,0.7); border: 2px solid #ffffff; border-radius: 3px; overflow: hidden; display: inline-block; }
+        #satHpBarFill { display: block; width: 100%; height: 100%; background: #ff4500; transition: width 0.1s; }
+    </style>
+</head>
+<body>
+    <div id="gameContainer">
+        <canvas id="gameCanvas" width="800" height="500"></canvas>
+        <div id="uiOverlay">
+            <span>SCORE: <span id="scoreVal">0</span>[cite: 1]</span>
+            <span>HP: <span id="hpVal">100</span>%[cite: 1]</span>
+            <span>SATELLITE: <span id="satVal">3</span>[cite: 1]</span>
+            <span class="satGaugeContainer">
+                <span>SAT HP:[cite: 1]</span>
+                <span id="satHpBarBg"><span id="satHpBarFill"></span>[cite: 1]</span>
+            </span>
+        </div>
+        <div id="statusMessage" style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); font-size:40px; font-weight:bold; color:#ff3366; text-shadow:0 0 10px rgba(255,51,102,0.5); display:none; text-align:center; background:rgba(0,0,0,0.9); padding:20px 40px; border-radius:10px; border:2px solid #ff3366;">GAME OVER<br><span style="font-size:20px; color:#fff;">Enterキーで再挑戦</span></div>
+    </div>
+    <div class="instructions">👉 <strong>操作:</strong> 【↑/↓キー長押し】上下移動 | 【Space】狙撃 | 【Enter】衛星移動。5体連続撃破でオラオラ10発（壁が10発耐えると破壊）。壁消失後は敵を倒すごとにオラオラが襲いかかります！[cite: 1]</div>
+<script>
+const canvas = document.getElementById('gameCanvas'), ctx = canvas.getContext('2d'), scoreVal = document.getElementById('scoreVal'), hpVal = document.getElementById('hpVal'), satVal = document.getElementById('satVal'), satHpBarFill = document.getElementById('satHpBarFill'), statusMessage = document.getElementById('statusMessage');
+let score = 0, hp = 100, satStock = 3, gameOver = false, playerBullets = [], enemyBullets = [], enemies = [], particles = [], canSeeSatellite = true;
+const PEEK_OFFSET = 50;
+const player = { x: 60, y: 175, baseY: 175, isAiming: false, peekDir: 0, cooldown: 0 };
+const satellite = { x: 400, y: 150, radius: 15, active: true, pulse: 0, speed: 2.5, hp: 300, maxHp: 300, tx: null, ty: null };
+const rock = { x: 80, y: 140, w: 40, h: 70, hp: 10, maxHp: 10, destroyed: false };
+
+const mountain = [{x:0, y:500}, {x:120, y:200}, {x:250, y:200}, {x:350, y:380}, {x:500, y:380}, {x:600, y:500}];
+const keys = {};
+
+let consecutiveKills = 0;
+let lastKillTime = 0;
+const COMBO_WINDOW = 2000; 
+let oraOraPunches = [];    
+
+window.addEventListener('keydown', (e) => { keys[e.code] = true; if(e.code==='Enter' && gameOver) { resetGame(); e.preventDefault(); return; } updatePlayerPose(); if(e.code==='Enter' && !e.repeat) commandSatellite(); if(e.code==='Space' && player.isAiming && satellite.active && canSeeSatellite && player.cooldown<=0 && !gameOver) shootSniper(); if(['Space','Enter','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) e.preventDefault(); });
+window.addEventListener('keyup', (e) => { keys[e.code] = false; updatePlayerPose(); });
+
+function checkLineIntersection(a1, a2, b1, b2) {
+    const det = (a2.x - a1.x) * (b2.y - b1.y) - (b2.x - b1.x) * (a2.y - a1.y); if (det === 0) return false;
+    const u = ((b1.x - a1.x) * (b2.y - b1.y) - (b1.y - a1.y) * (b2.x - b1.x)) / det, v = ((b1.x - a1.x) * (a2.y - a1.y) - (b1.y - a1.y) * (a2.x - a1.x)) / det;
+    return (u >= 0 && u <= 1 && v >= 0 && v <= 1);
+}
+function checkSight() {
+    if (!satellite.active || rock.destroyed) return true; // 壁がなくなったら常に視線が通る
+    const pPos = { x: player.x, y: player.y };
+    const corners = [
+        { x: rock.x, y: rock.y }, { x: rock.x + rock.w, y: rock.y },
+        { x: rock.x + rock.w, y: rock.y + rock.h }, { x: rock.x, y: rock.y + rock.h }
+    ];
+    for (let i = 0; i < 4; i++) { if (checkLineIntersection(pPos, satellite, corners[i], corners[(i + 1) % 4])) return false; }
+    if (satellite.x >= rock.x && satellite.x <= rock.x + rock.w && satellite.y >= rock.y && satellite.y <= rock.y + rock.h) return false;
+    return true;
+}
+
+function updatePlayerPose() {
+    if (gameOver) return;
+    const up = keys['ArrowUp'], down = keys['ArrowDown'];
+    player.peekDir = (up && !down) ? -1 : (down && !up) ? 1 : 0;
+    player.isAiming = player.peekDir !== 0;
+    player.y = player.baseY + player.peekDir * PEEK_OFFSET;
+}
+function commandSatellite() {
+    if (gameOver || !satellite.active) return;
+    satellite.tx = 140 + Math.random() * (canvas.width - 140 - satellite.radius);
+    satellite.ty = satellite.radius + Math.random() * (canvas.height - satellite.radius * 2);
+}
+function shootSniper() { player.cooldown = 30; const a = Math.atan2(satellite.y - player.y, satellite.x - player.x); playerBullets.push({ x: player.x, y: player.y, vx: Math.cos(a)*12, vy: Math.sin(a)*12, transferred: false }); createParticles(player.x+20, player.y, '#fff', 5); }
+function spawnEnemy() {
+    if (enemies.length < 3 && Math.random() < 0.02) enemies.push({ x: 650 + Math.random()*100, y: 450, upper: false, shootTimer: Math.random()*100 + 50 });
+    if (enemies.length < 3 && Math.random() < 0.02 / 8) enemies.push({ x: 650 + Math.random()*100, y: 40 + Math.random()*70, upper: true, shootTimer: Math.random()*100 + 50 });
+}
+function createParticles(x, y, col, cnt) { for(let i=0; i<cnt; i++) particles.push({ x:x, y:y, vx:(Math.random()-0.5)*6, vy:(Math.random()-0.5)*6, life:20, color:col }); }
+function updateSatHpUI() { satHpBarFill.style.width = Math.max(0, (satellite.hp / satellite.maxHp) * 100) + '%'; }
+function resetGame() { 
+    score = 0; hp = 100; satStock = 3; gameOver = false; playerBullets = []; enemyBullets = []; enemies = []; particles = []; 
+    consecutiveKills = 0; lastKillTime = 0; oraOraPunches = [];
+    rock.hp = rock.maxHp; rock.destroyed = false;
+    updatePlayerPose(); satellite.active = true; satellite.tx = satellite.ty = null; satellite.hp = satellite.maxHp; satellite.x = 400; satellite.y = 150; 
+    statusMessage.style.display = 'none'; 
+    scoreVal.innerText = score; hpVal.innerText = hp; satVal.innerText = satStock; updateSatHpUI(); 
+}
+
+updateSatHpUI();
+
+function update() {
+    if (gameOver) return;
+    if (player.cooldown > 0) player.cooldown--;
+    updatePlayerPose();
+    
+    if (satellite.active && satellite.tx !== null) {
+        const dx = satellite.tx - satellite.x, dy = satellite.ty - satellite.y, d = Math.hypot(dx, dy);
+        if (d <= satellite.speed) { satellite.x = satellite.tx; satellite.y = satellite.ty; satellite.tx = satellite.ty = null; }
+        else { satellite.x += dx / d * satellite.speed; satellite.y += dy / d * satellite.speed; }
+    }
+
+    canSeeSatellite = checkSight(); spawnEnemy();
+    enemies.forEach(e => { 
+        e.shootTimer--; 
+        if(e.shootTimer<=0) { 
+            e.shootTimer = 120 + Math.random()*60; 
+            let targetObj;
+            if (satellite.active && Math.random() < 0.125) {
+                targetObj = satellite;
+            } else {
+                targetObj = {x: player.x, y: player.baseY + (e.upper ? -PEEK_OFFSET : PEEK_OFFSET)};
+            }
+            const a = Math.atan2(targetObj.y - e.y, targetObj.x - e.x); 
+            enemyBullets.push({ x:e.x, y:e.y, vx:Math.cos(a)*5, vy:Math.sin(a)*5 }); 
+        } 
+    });
+
+    for (let i = playerBullets.length - 1; i >= 0; i--) {
+        let b = playerBullets[i]; b.x += b.vx; b.y += b.vy;
+        if (!b.transferred && satellite.active && Math.hypot(b.x - satellite.x, b.y - satellite.y) < satellite.radius + 5) {
+            b.transferred = true;
+            if (enemies.length > 0) {
+                let tgt = enemies[0], minDist = Math.hypot(enemies[0].x - satellite.x, enemies[0].y - satellite.y);
+                enemies.forEach(e => { let d = Math.hypot(e.x - satellite.x, e.y - satellite.y); if(d < minDist) { minDist = d; tgt = e; } });
+                const a = Math.atan2(tgt.y - satellite.y, tgt.x - satellite.x); b.vx = Math.cos(a)*15; b.vy = Math.sin(a)*15; b.x = satellite.x; b.y = satellite.y; createParticles(satellite.x, satellite.y, '#00ffcc', 15);
+            }
+        }
+        for (let j = enemies.length - 1; j >= 0; j--) {
+            if (Math.hypot(b.x - enemies[j].x, b.y - enemies[j].y) < 20) { 
+                createParticles(enemies[j].x, enemies[j].y, '#ff3366', 15); 
+                enemies.splice(j, 1); 
+                playerBullets.splice(i, 1); 
+                score += 100; 
+                scoreVal.innerText = score; 
+
+                // 壁が破壊された後の処理：敵を倒すごとにオラオラが襲いかかる
+                if (rock.destroyed) {
+                    const startX = canvas.width + 50;
+                    const startY = player.y + (Math.random() - 0.5) * 40;
+                    const angle = Math.atan2(player.y - startY, player.x - startX);
+                    oraOraPunches.push({
+                        x: startX,
+                        y: startY,
+                        vx: Math.cos(angle) * 8,
+                        vy: Math.sin(angle) * 8,
+                        text: Math.random() < 0.5 ? '👊オラ！' : '👊オラオラ！'
+                    });
+                } else {
+                    // 通常時：5体連続撃破の判定
+                    const now = Date.now();
+                    if (now - lastKillTime < COMBO_WINDOW) {
+                        consecutiveKills++;
+                    } else {
+                        consecutiveKills = 1;
+                    }
+                    lastKillTime = now;
+
+                    if (consecutiveKills >= 5) {
+                        consecutiveKills = 0; 
+                        for(let k = 0; k < 10; k++) {
+                            setTimeout(() => {
+                                if (gameOver) return;
+                                const startX = canvas.width + 50;
+                                const startY = rock.y + rock.h / 2 + (Math.random() - 0.5) * 40;
+                                const targetX = rock.x + rock.w / 2;
+                                const targetY = rock.y + rock.h / 2;
+                                const angle = Math.atan2(targetY - startY, targetX - startX);
+                                oraOraPunches.push({
+                                    x: startX,
+                                    y: startY,
+                                    vx: Math.cos(angle) * 7,
+                                    vy: Math.sin(angle) * 7,
+                                    text: '👊オラ！'
+                                });
+                            }, k * 150);
+                        }
+                    }
+                }
+                break; 
+            }
+        }
+        if (b.x < 0 || b.x > canvas.width || b.y < 0 || b.y > canvas.height) playerBullets.splice(i, 1);
+    }
+
+    // --- オラオラパンチの更新処理 ---
+    for (let i = oraOraPunches.length - 1; i >= 0; i--) {
+        let p = oraOraPunches[i];
+        p.x += p.vx;
+        p.y += p.vy;
+
+        if (!rock.destroyed && p.x >= rock.x && p.x <= rock.x + rock.w && p.y >= rock.y && p.y <= rock.y + rock.h) {
+            rock.hp--;
+            createParticles(p.x, p.y, '#999', 5);
+            oraOraPunches.splice(i, 1);
+            if (rock.hp <= 0) {
+                rock.destroyed = true;
+                createParticles(rock.x + rock.w/2, rock.y + rock.h/2, '#7f8c8d', 30);
+            }
+            continue;
+        }
+
+        if (rock.destroyed && Math.hypot(p.x - player.x, p.y - player.y) < 25) {
+            hp -= 34;
+            if (hp < 0) hp = 0;
+            hpVal.innerText = hp;
+            createParticles(player.x, player.y, '#ff0000', 10);
+            oraOraPunches.splice(i, 1);
+            if (hp <= 0) {
+                gameOver = true;
+                statusMessage.style.display = 'block';
+            }
+            continue;
+        }
+
+        if (p.x < -50 || p.x > canvas.width + 100 || p.y < -50 || p.y > canvas.height + 50) {
+            oraOraPunches.splice(i, 1);
+        }
+    }
+
+    for (let i = enemyBullets.length - 1; i >= 0; i--) {
+        let b = enemyBullets[i]; b.x += b.vx; b.y += b.vy;
+        if (!rock.destroyed && b.x >= rock.x && b.x <= rock.x + rock.w && b.y >= rock.y && b.y <= rock.y + rock.h) { createParticles(b.x, b.y, '#666', 3); enemyBullets.splice(i, 1); continue; }
+        if (satellite.active && Math.hypot(b.x - satellite.x, b.y - satellite.y) < satellite.radius + 5) {
+            satellite.hp -= 25; createParticles(satellite.x, satellite.y, '#ffaa00', 8); enemyBullets.splice(i, 1);
+            updateSatHpUI();
+            if (satellite.hp <= 0) {
+                createParticles(satellite.x, satellite.y, '#ff3300', 25); satellite.active = false; satStock--; satVal.innerText = satStock;
+                if (satStock > 0) { setTimeout(() => { satellite.active = true; satellite.hp = satellite.maxHp; satellite.x = 400; satellite.y = 150; satellite.tx = satellite.ty = null; updateSatHpUI(); }, 1500); }
+            }
+            continue;
+        }
+        if (Math.hypot(b.x - player.x, b.y - player.y) < 20 && player.isAiming) { hp -= 34; if(hp < 0) hp = 0; hpVal.innerText = hp; createParticles(player.x, player.y, '#ff0000', 10); enemyBullets.splice(i, 1); if(hp <= 0) { gameOver = true; statusMessage.style.display = 'block'; } }
+        if (b.x < 0 || b.x > canvas.width || b.y < 0 || b.y > canvas.height) enemyBullets.splice(i, 1);
+    }
+    particles.forEach((p, i) => { p.x += p.vx; p.y += p.vy; p.life--; if(p.life<=0) particles.splice(i, 1); });
+    satellite.pulse += 0.1;
+}
+
+function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#2c3e50'; ctx.beginPath(); ctx.moveTo(mountain[0].x, mountain[0].y); mountain.forEach(m => ctx.lineTo(m.x, m.y)); ctx.closePath(); ctx.fill();
+    
+    if (!rock.destroyed) {
+        ctx.fillStyle = '#7f8c8d'; 
+        ctx.fillRect(rock.x, rock.y, rock.w, rock.h);
+    }
+
+    ctx.fillStyle = player.isAiming ? '#ffcc00' : '#3498db'; ctx.beginPath(); ctx.arc(player.x, player.y, 12, 0, Math.PI*2); ctx.fill();
+    if (player.isAiming && canSeeSatellite) { ctx.strokeStyle = '#fff'; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(player.x, player.y); ctx.lineTo(player.x + 20, player.y); ctx.stroke(); }
+    if (satellite.active) {
+        ctx.save(); ctx.translate(satellite.x, satellite.y); ctx.strokeStyle = 'rgba(0, 255, 200, ' + (0.1 + Math.sin(satellite.pulse)*0.1) + ')'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(0, 0, satellite.radius + 15, 0, Math.PI*2); ctx.stroke();
+        ctx.fillStyle = '#00ffcc'; ctx.beginPath(); ctx.arc(0, 0, satellite.radius, 0, Math.PI*2); ctx.fill(); ctx.strokeStyle = '#111'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(-10, 0); ctx.lineTo(10, 0); ctx.stroke(); ctx.beginPath(); ctx.moveTo(0, -10); ctx.lineTo(0, 10); ctx.stroke(); ctx.restore();
+        if (player.isAiming && canSeeSatellite) { ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(player.x, player.y); ctx.lineTo(satellite.x, satellite.y); ctx.stroke(); }
+    }
+    enemies.forEach(e => { ctx.fillStyle = '#e74c3c'; ctx.beginPath(); ctx.arc(e.x, e.y, 15, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = '#fff'; ctx.fillRect(e.x - 8, e.y - 5, 5, 5); });
+    playerBullets.forEach(b => { ctx.fillStyle = b.transferred ? '#00ffcc' : '#fff'; ctx.beginPath(); ctx.arc(b.x, b.y, 4, 0, Math.PI * 2); ctx.fill(); });
+    enemyBullets.forEach(b => { ctx.fillStyle = '#ff5533'; ctx.beginPath(); ctx.arc(b.x, b.y, 4, 0, Math.PI*2); ctx.fill(); });
+    
+    oraOraPunches.forEach(p => {
+        ctx.save();
+        ctx.font = 'bold 32px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.shadowColor = '#ff0055';
+        ctx.shadowBlur = 15;
+        ctx.fillStyle = '#fff';
+        ctx.fillText(p.text, p.x, p.y);
+        ctx.restore();
+    });
+
+    particles.forEach(p => { ctx.fillStyle = p.color; ctx.fillRect(p.x, p.y, 3, 3); });
+}
+function loop() { update(); draw(); requestAnimationFrame(loop); }
+loop();
+</script>
+</body>
+</html>
