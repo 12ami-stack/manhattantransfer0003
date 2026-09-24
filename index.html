@@ -17,17 +17,17 @@
     <div id="gameContainer">
         <canvas id="gameCanvas" width="800" height="500"></canvas>
         <div id="uiOverlay">
-            <span>SCORE: <span id="scoreVal">0</span>[cite: 1]</span>
-            <span>HP: <span id="hpVal">100</span>%[cite: 1]</span>
-            <span>SATELLITE: <span id="satVal">3</span>[cite: 1]</span>
+            <span>SCORE: <span id="scoreVal">0</span> </span>
+            <span>HP: <span id="hpVal">100</span>% </span>
+            <span>SATELLITE: <span id="satVal">3</span> </span>
             <span class="satGaugeContainer">
-                <span>SAT HP:[cite: 1]</span>
-                <span id="satHpBarBg"><span id="satHpBarFill"></span>[cite: 1]</span>
+                <span>　SAT HP:</span>
+                <span id="satHpBarBg"><span id="satHpBarFill"></span></span>
             </span>
         </div>
         <div id="statusMessage" style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); font-size:40px; font-weight:bold; color:#ff3366; text-shadow:0 0 10px rgba(255,51,102,0.5); display:none; text-align:center; background:rgba(0,0,0,0.9); padding:20px 40px; border-radius:10px; border:2px solid #ff3366;">GAME OVER<br><span style="font-size:20px; color:#fff;">Enterキーで再挑戦</span></div>
     </div>
-    <div class="instructions">👉 <strong>操作:</strong> 【↑/↓キー長押し】上下移動 | 【Space】狙撃 | 【Enter】衛星移動。5体連続撃破でオラオラ10発（壁が10発耐えると破壊）。壁消失後は敵を倒すごとにオラオラが襲いかかります！[cite: 1]</div>
+    <div class="instructions">👉 <strong>操作:</strong> 【↑/↓キー長押し】上下移動 | 【Space】狙撃 | 【Enter】スタンド衛星移動</div>
 <script>
 const canvas = document.getElementById('gameCanvas'), ctx = canvas.getContext('2d'), scoreVal = document.getElementById('scoreVal'), hpVal = document.getElementById('hpVal'), satVal = document.getElementById('satVal'), satHpBarFill = document.getElementById('satHpBarFill'), statusMessage = document.getElementById('statusMessage');
 let score = 0, hp = 100, satStock = 3, gameOver = false, playerBullets = [], enemyBullets = [], enemies = [], particles = [], canSeeSatellite = true;
